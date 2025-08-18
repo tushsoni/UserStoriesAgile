@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>User Story Manager Pro</title>
+  <title>User Story Manager</title>
   <style>
     /* Reset and Core Styles */
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -141,7 +141,7 @@
       <div class="header">
         <div class="header-row">
           <div>
-            <div class="title">🎯 User Story Manager Pro</div>
+            <div class="title">🎯 User Story Manager</div>
             <div style="color:var(--muted); font-size:.95rem; margin-top:4px;">
               Create, manage, visualize (Kanban), export & autosave your agile user stories.
             </div>
@@ -321,6 +321,14 @@
       }, 1600);
     }
     
+    // Generates a short acronym for a project name (e.g., 'Canteen Ordering System' -> 'COS')
+    function getProjectAcronym(projectName) {
+        if (!projectName) return '';
+        const words = projectName.split(/\s+/).filter(Boolean);
+        if (words.length <= 1) return projectName.substring(0, 3).toUpperCase();
+        return words.map(word => word[0].toUpperCase()).join('');
+    }
+
     // ===== AUTHENTICATION LOGIC =====
     auth.onAuthStateChanged(user => {
         if (user) {
@@ -407,12 +415,25 @@
 
     async function addStory(data) {
       try {
-        const docRef = await db.collection('stories').doc(currentUser.uid).collection('user_stories').add({
-          ...data,
-          createdDate: new Date()
+        const projectAcronym = getProjectAcronym(data.project);
+        const counterRef = db.collection('stories').doc(currentUser.uid).collection('counters').doc(projectAcronym);
+        
+        let newStoryId = '';
+        await db.runTransaction(async (transaction) => {
+            const counterDoc = await transaction.get(counterRef);
+            let nextId = 1;
+            if (counterDoc.exists) {
+                nextId = counterDoc.data().nextId;
+            }
+            newStoryId = `US-${projectAcronym}-${nextId}`;
+            
+            const storyRef = db.collection('stories').doc(currentUser.uid).collection('user_stories').doc(newStoryId);
+            transaction.set(storyRef, { ...data, createdDate: new Date() });
+            transaction.set(counterRef, { nextId: nextId + 1 });
         });
+
         toast('Story created!');
-        return docRef.id;
+        return newStoryId;
       } catch (e) {
         console.error("Error adding story: ", e);
         toast('Error creating story.');
@@ -441,23 +462,43 @@
 
     async function addProjectToDB(projectName) {
       try {
-        await db.collection('stories').doc(currentUser.uid).collection('projects').doc(projectName).set({});
+        const projectAcronym = getProjectAcronym(projectName);
+        const projectsRef = db.collection('stories').doc(currentUser.uid).collection('projects');
+        const countersRef = db.collection('stories').doc(currentUser.uid).collection('counters');
+
+        await db.runTransaction(async (transaction) => {
+            const projectDoc = await transaction.get(projectsRef.doc(projectName));
+            if (projectDoc.exists) {
+                throw new Error("Project already exists.");
+            }
+            transaction.set(projectsRef.doc(projectName), { acronym: projectAcronym });
+            transaction.set(countersRef.doc(projectAcronym), { nextId: 1 });
+        });
+
         toast('Project added!');
       } catch (e) {
         console.error("Error adding project:", e);
-        toast('Error adding project.');
+        toast(`Error adding project: ${e.message}`);
       }
     }
 
     async function deleteProjectFromDB(projectName) {
       try {
-        await db.collection('stories').doc(currentUser.uid).collection('projects').doc(projectName).delete();
-        userStories.forEach(s => {
-          if (s.project === projectName) {
-            updateStory(s.id, { project: '' });
-          }
+        const storiesToDelete = userStories.filter(s => s.project === projectName);
+        const batch = db.batch();
+        const projectAcronym = getProjectAcronym(projectName);
+
+        // Delete all stories associated with the project
+        storiesToDelete.forEach(s => {
+          batch.delete(db.collection('stories').doc(currentUser.uid).collection('user_stories').doc(s.id));
         });
-        toast('Project deleted!');
+
+        // Delete the project and its counter
+        batch.delete(db.collection('stories').doc(currentUser.uid).collection('projects').doc(projectName));
+        batch.delete(db.collection('stories').doc(currentUser.uid).collection('counters').doc(projectAcronym));
+
+        await batch.commit();
+        toast('Project and its stories deleted!');
       } catch (e) {
         console.error("Error deleting project:", e);
         toast('Error deleting project.');
@@ -714,22 +755,49 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
     }
-    function loadSampleData() {
-      const samples = [{
-        project: 'Website V1', title: 'User Registration', userType: 'new customer', action: 'create an account with email and password', benefit: 'I can save my preferences and track orders', priority: 'High', storyPoints: 3, epic: 'User Management', tags: ['Auth', 'UI'], acceptanceCriteria: ['Given a valid email and strong password, When I submit, Then account is created', 'Given a duplicate email, When I submit, Then I see an error'], status: 'Backlog'
-      }, {
-        project: 'Website V1', title: 'Product Search', userType: 'customer', action: 'search products by name or category', benefit: 'I can quickly find what I need', priority: 'High', storyPoints: 5, epic: 'Catalog', tags: ['Search', 'UX'], acceptanceCriteria: ['Search supports partial match', 'Filters by price and rating'], status: 'In Progress'
-      }, {
-        project: 'Website V1', title: 'Shopping Cart', userType: 'customer', action: 'add items and modify quantities', benefit: 'I can review before purchase', priority: 'Critical', storyPoints: 8, epic: 'Shopping', tags: ['Cart', 'Persistence'], acceptanceCriteria: ['Items persist across sessions', 'Totals update instantly'], status: 'In Progress'
-      }, {
-        project: 'Mobile App', title: 'Payment Processing', userType: 'customer', action: 'pay for my order securely', benefit: 'I can complete my purchase safely', priority: 'Critical', storyPoints: 13, epic: 'Checkout', tags: ['Payments', 'Security'], acceptanceCriteria: ['Encrypt card data', 'Email receipt sent'], status: 'Backlog'
-      }, {
-        project: 'Mobile App', title: 'Order Tracking', userType: 'customer', action: 'track order status', benefit: 'I know when to expect delivery', priority: 'Medium', storyPoints: 5, epic: 'Orders', tags: ['Tracking', 'Notifications'], acceptanceCriteria: ['Status updates in real time', 'Show ETA'], status: 'Done'
-      }, ];
-      samples.forEach(s => addStory(s));
-      projects = [...new Set(samples.map(s => s.project))];
-      projects.forEach(p => addProjectToDB(p));
-      toast('Sample stories loaded');
+    async function loadSampleData() {
+        const samples = [
+            { project: 'Website V1', title: 'User Registration', userType: 'new customer', action: 'create an account with email and password', benefit: 'I can save my preferences and track orders', priority: 'High', storyPoints: 3, epic: 'User Management', tags: ['Auth', 'UI'], acceptanceCriteria: ['Given a valid email and strong password, When I submit, Then account is created', 'Given a duplicate email, When I submit, Then I see an error'], status: 'Backlog' },
+            { project: 'Website V1', title: 'Product Search', userType: 'customer', action: 'search products by name or category', benefit: 'I can quickly find what I need', priority: 'High', storyPoints: 5, epic: 'Catalog', tags: ['Search', 'UX'], acceptanceCriteria: ['Search supports partial match', 'Filters by price and rating'], status: 'In Progress' },
+            { project: 'Website V1', title: 'Shopping Cart', userType: 'customer', action: 'add items and modify quantities', benefit: 'I can review before purchase', priority: 'Critical', storyPoints: 8, epic: 'Shopping', tags: ['Cart', 'Persistence'], acceptanceCriteria: ['Items persist across sessions', 'Totals update instantly'], status: 'In Progress' },
+            { project: 'Mobile App', title: 'Payment Processing', userType: 'customer', action: 'pay for my order securely', benefit: 'I can complete my purchase safely', priority: 'Critical', storyPoints: 13, epic: 'Checkout', tags: ['Payments', 'Security'], acceptanceCriteria: ['Encrypt card data', 'Email receipt sent'], status: 'Backlog' },
+            { project: 'Mobile App', title: 'Order Tracking', userType: 'customer', action: 'track order status', benefit: 'I know when to expect delivery', priority: 'Medium', storyPoints: 5, epic: 'Orders', tags: ['Tracking', 'Notifications'], acceptanceCriteria: ['Status updates in real time', 'Show ETA'], status: 'Done' },
+        ];
+        
+        // Clear all existing data before adding samples
+        await clearAllData();
+
+        const uniqueProjects = [...new Set(samples.map(s => s.project))];
+        for (const project of uniqueProjects) {
+            await addProjectToDB(project);
+        }
+
+        for (const story of samples) {
+            await addStory(story);
+        }
+
+        toast('Sample stories loaded!');
+    }
+    
+    async function clearAllData() {
+        try {
+            const storiesRef = db.collection('stories').doc(currentUser.uid).collection('user_stories');
+            const projectsRef = db.collection('stories').doc(currentUser.uid).collection('projects');
+            const countersRef = db.collection('stories').doc(currentUser.uid).collection('counters');
+
+            const [storyDocs, projectDocs, counterDocs] = await Promise.all([storiesRef.get(), projectsRef.get(), countersRef.get()]);
+            const batch = db.batch();
+
+            storyDocs.forEach(doc => batch.delete(doc.ref));
+            projectDocs.forEach(doc => batch.delete(doc.ref));
+            counterDocs.forEach(doc => batch.delete(doc.ref));
+
+            await batch.commit();
+            toast('All data cleared successfully.');
+        } catch (e) {
+            console.error("Error clearing data:", e);
+            toast("Error clearing data.");
+        }
     }
 
     // ===== Event Wiring =====
@@ -747,11 +815,11 @@
       });
       el('btnAddProject').addEventListener('click', () => {
         const projectName = el('newProjectName').value.trim();
-        if (projectName && !projects.includes(projectName)) {
+        if (projectName) {
           addProjectToDB(projectName);
           el('newProjectName').value = '';
         } else {
-          alert('Please enter a unique project name.');
+          alert('Please enter a project name.');
         }
       });
       el('newProjectName').addEventListener('keydown', (e) => {
@@ -784,23 +852,8 @@
         el('project').value = '';
       });
       ['projectFilter', 'priorityFilter', 'epicFilter', 'statusFilter', 'searchInput'].forEach(id => el(id).addEventListener('input', filterStories));
-      el('btnSample').addEventListener('click', () => { confirmAction('Loading sample stories will remove all existing stories. Are you sure you want to proceed?', loadSampleData); });
-      el('btnClear').addEventListener('click', () => { confirmAction('Clear ALL stories? This cannot be undone.', async () => {
-        try {
-            const storiesRef = db.collection('stories').doc(currentUser.uid).collection('user_stories');
-            const projectsRef = db.collection('stories').doc(currentUser.uid).collection('projects');
-            const storyDocs = await storiesRef.get();
-            const projectDocs = await projectsRef.get();
-            const batch = db.batch();
-            storyDocs.forEach(doc => batch.delete(doc.ref));
-            projectDocs.forEach(doc => batch.delete(doc.ref));
-            await batch.commit();
-            toast('All stories cleared');
-        } catch (e) {
-            console.error("Error clearing data:", e);
-            toast("Error clearing data");
-        }
-      });});
+      el('btnSample').addEventListener('click', () => { confirmAction('Loading sample stories will remove all existing stories and projects. Are you sure you want to proceed?', loadSampleData); });
+      el('btnClear').addEventListener('click', () => { confirmAction('Clear ALL stories, projects, and counters? This cannot be undone.', clearAllData); });
       el('btnExportJSON').addEventListener('click', exportJSON);
       el('btnExportCSV').addEventListener('click', exportCSV);
       el('btnExportPDF').addEventListener('click', exportPDF);
